@@ -928,16 +928,8 @@ def cmd_chat(args):
             )
             sys.exit(1)
 
-        try:
-            reply = input("Run setup now? [Y/n] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            reply = "n"
-        if reply in ("", "y", "yes"):
-            cmd_setup(args)
-            return
-        print()
-        print("You can run 'hermes setup' at any time to configure.")
-        sys.exit(1)
+        cmd_setup(args)
+        return
 
     # Start update check in background (runs while other init happens)
     try:
