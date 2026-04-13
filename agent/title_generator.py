@@ -44,9 +44,16 @@ def generate_title(user_message: str, assistant_response: str, timeout: float = 
         )
         title = (response.choices[0].message.content or "").strip()
         # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
-        title = title.strip('"\'')
+        title = title.strip('"\' )
         if title.lower().startswith("title:"):
             title = title[6:].strip()
+        # Strip thinking/reasoning tags that some models emit
+        import re
+        title = re.sub(r'<think>.*?</think>', '', title, flags=re.DOTALL).strip()
+        title = re.sub(r'<thought>.*?</thought>', '', title, flags=re.DOTALL).strip()
+        # If the entire content was a thinking block, discard
+        if not title:
+            return None
         # Enforce reasonable length
         if len(title) > 80:
             title = title[:77] + "..."
