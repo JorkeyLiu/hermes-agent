@@ -569,6 +569,7 @@ from rich.console import Console
 from rich.markup import escape as _escape
 from rich.panel import Panel
 from rich.text import Text as _RichText
+from rich.markdown import Markdown as _Markdown
 
 import fire
 
@@ -1057,6 +1058,19 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     ``[not markup]`` while still interpreting real ANSI color codes.
     """
     return _RichText.from_ansi(text or "")
+
+
+def _render_markdown(text: str) -> _Markdown:
+    """Render markdown text using Rich's Markdown renderer.
+
+    Falls back to plain text if markdown parsing fails.
+    """
+    if not text:
+        return _Markdown("")
+    try:
+        return _Markdown(text, code_theme="monokai")
+    except Exception:
+        return _Markdown(text)
 
 
 def _cprint(text: str):
@@ -2575,14 +2589,20 @@ class HermesCLI:
         self._stream_buf += text
 
         # Emit complete lines, keep partial remainder in buffer
-        _tc = getattr(self, "_stream_text_ansi", "")
-        while "\n" in self._stream_buf:
-            line, self._stream_buf = self._stream_buf.split("\n", 1)
-            _cprint(f"{_tc}{line}{_RST}" if _tc else line)
+        # NOTE: We suppress per-line printing here so the final markdown
+        # panel can be rendered cleanly on stream completion.  The entire
+        # streamed response (stored in _stream_buf) is rendered as one
+        # markdown panel in the already_streamed branch below.
 
-    def _flush_stream(self) -> None:
-        """Emit any remaining partial line from the stream buffer and close the box."""
-        # If we're still inside a "reasoning block" at end-of-stream, it was
+    def _flush_stream(self, *, _emit_buffer: bool = True) -> None:
+        """Emit any remaining partial line from the stream buffer and close the box.
+
+        Args:
+            _emit_buffer: If True (default), prints buffered stream content before
+                closing.  Pass False when rendering the buffered content as a
+                markdown panel instead.
+        """
+        # If we are still inside a "reasoning block" at end-of-stream, it was
         # a false positive — the model mentioned a tag like <think> in prose
         # but never closed it.  Recover the buffered content as regular text.
         if getattr(self, "_in_reasoning_block", False) and getattr(self, "_stream_prefilt", ""):
@@ -2593,7 +2613,7 @@ class HermesCLI:
         # Close reasoning box if still open (in case no content tokens arrived)
         self._close_reasoning_box()
 
-        if self._stream_buf:
+        if _emit_buffer and self._stream_buf:
             _tc = getattr(self, "_stream_text_ansi", "")
             _cprint(f"{_tc}{self._stream_buf}{_RST}" if _tc else self._stream_buf)
             self._stream_buf = ""
@@ -2616,6 +2636,9 @@ class HermesCLI:
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
         self._deferred_content = ""
+        # Markdown rendering: accumulate streamed content without printing
+        self._stream_markdown_buf = ""
+        self._stream_markdown_header_printed = False
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
@@ -7816,13 +7839,24 @@ class HermesCLI:
                     w = shutil.get_terminal_size().columns
                     _cprint(f"\n{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
                 elif already_streamed:
-                    # Response was already streamed token-by-token with box framing;
-                    # _flush_stream() already closed the box. Skip Rich Panel.
-                    pass
+                    # Response was streamed token-by-token with box framing.
+                    # Flush (close box without printing raw buffer), then render
+                    # the final response as a formatted markdown panel.
+                    self._flush_stream(_emit_buffer=False)
+                    _chat_console = ChatConsole()
+                    _chat_console.print(Panel(
+                        _render_markdown(response),
+                        title=f"[{_resp_color} bold]{label}[/]",
+                        title_align="left",
+                        border_style=_resp_color,
+                        style=_resp_text,
+                        box=rich_box.HORIZONTALS,
+                        padding=(1, 2),
+                    ))
                 else:
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                        _render_markdown(response),
                         title=f"[{_resp_color} bold]{label}[/]",
                         title_align="left",
                         border_style=_resp_color,
