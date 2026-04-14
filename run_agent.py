@@ -1611,6 +1611,25 @@ class AIAgent:
             or is_native_anthropic
         )
 
+        # Resolve per-model context_length from custom_providers config (step-0 override
+        # in get_model_context_length), so the correct value is used instead of the stale
+        # _config_context_length from the default model.
+        resolved_context_length: int | None = None
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            for entry in cfg.get("custom_providers") or []:
+                entry_base = (entry.get("base_url") or "").rstrip("/")
+                if entry_base and entry_base == (self.base_url or "").rstrip("/"):
+                    models_map = entry.get("models", {})
+                    if isinstance(models_map, dict) and self.model in models_map:
+                        model_entry = models_map[self.model]
+                        if isinstance(model_entry, dict):
+                            resolved_context_length = model_entry.get("context_length")
+                        break
+        except Exception:
+            pass  # Config is optional; fall through to other resolution paths
+
         # ── Update context compressor ──
         if hasattr(self, "context_compressor") and self.context_compressor:
             from agent.model_metadata import get_model_context_length
@@ -1619,7 +1638,7 @@ class AIAgent:
                 base_url=self.base_url,
                 api_key=self.api_key,
                 provider=self.provider,
-                config_context_length=getattr(self, "_config_context_length", None),
+                config_context_length=resolved_context_length,
             )
             self.context_compressor.update_model(
                 model=self.model,

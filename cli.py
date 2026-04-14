@@ -2729,12 +2729,12 @@ class HermesCLI:
         self.base_url = base_url
 
         # When a custom_provider entry carries an explicit `model` field,
-        # use it as the effective model name.  Without this, running
-        # `hermes chat --model <provider-name>` sends the provider name
-        # (e.g. "my-provider") as the model string to the API instead of
-        # the configured model (e.g. "qwen3.6-plus"), causing 400 errors.
+        # use it as the effective model name ONLY when the user has not already
+        # explicitly switched models via /model.  Without this check, a user's
+        # `model` switch would be silently overwritten every time
+        # _ensure_runtime_credentials() re-resolves the provider (on every message).
         runtime_model = runtime.get("model")
-        if runtime_model and isinstance(runtime_model, str):
+        if runtime_model and isinstance(runtime_model, str) and not getattr(self, "_model_switched_explicitly", False):
             self.model = runtime_model
 
         # If model is still empty (e.g. user ran `hermes auth add openai-codex`
@@ -4719,6 +4719,7 @@ class HermesCLI:
         # Apply to CLI state.
         # Update requested_provider so _ensure_runtime_credentials() doesn't
         # overwrite the switch on the next turn (it re-resolves from this).
+        self._model_switched_explicitly = True
         old_model = self.model
         self.model = result.new_model
         self.provider = result.target_provider
