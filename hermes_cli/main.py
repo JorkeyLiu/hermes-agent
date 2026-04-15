@@ -420,7 +420,7 @@ def _session_delete_picker(sessions: list) -> set[str]:
                 elif key in (curses.KEY_ENTER, 10, 13):
                     if selected:
                         result_holder[0] = selected
-                        return
+                    return
                 elif key == 27:  # Esc
                     if search_text:
                         search_text = ""
