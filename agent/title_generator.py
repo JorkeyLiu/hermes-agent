@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 
 _TITLE_PROMPT = (
     "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
-    "following exchange. The title should capture the main topic or intent. "
+    "following exchange. The title should capture the main topic or intent and MUST be "
+    "in the same language as the conversation. "
     "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
 )
 
@@ -38,13 +39,13 @@ def generate_title(user_message: str, assistant_response: str, timeout: float = 
         response = call_llm(
             task="title_generation",
             messages=messages,
-            max_tokens=500, #
+            max_tokens=500,
             temperature=0.3,
             timeout=timeout,
         )
         title = (response.choices[0].message.content or "").strip()
         # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
-        title = title.strip('"\' )
+        title = title.strip('\"\'')
         if title.lower().startswith("title:"):
             title = title[6:].strip()
         # Strip thinking/reasoning tags that some models emit
