@@ -354,10 +354,10 @@ def _session_delete_picker(sessions: list) -> set[str]:
                     return
 
                 if search_text:
-                    header = f"  Delete sessions -- filter: {search_text}"
+                    header = f"  Delete sessions -- filter: {search_text}█"
                     header_attr = curses.A_BOLD | (curses.color_pair(3) if curses.has_colors() else 0)
                 else:
-                    header = "  Delete sessions -- Space toggle  Enter confirm  Type to filter  Esc quit"
+                    header = "  Delete sessions -- Space/Enter toggle | y confirm | n/Esc cancel"
                     header_attr = curses.A_BOLD | (curses.color_pair(2) if curses.has_colors() else 0)
                 
                 try:
@@ -415,9 +415,18 @@ def _session_delete_picker(sessions: list) -> set[str]:
                         sid = filtered[cursor]["id"]
                         if sid in selected: selected.remove(sid)
                         else: selected.add(sid)
-                elif key in (curses.KEY_ENTER, 10, 13):
+                elif key in (curses.KEY_ENTER, 10, 13):  # Enter toggle
+                    if filtered:
+                        sid = filtered[cursor]["id"]
+                        if sid in selected:
+                            selected.remove(sid)
+                        else:
+                            selected.add(sid)
+                elif key in (ord('y'), ord('Y')):  # Confirm delete
                     if selected:
                         result_holder[0] = selected
+                    return
+                elif key in (ord('n'), ord('N')):  # Cancel
                     return
                 elif key == 27:  # Esc
                     if search_text:
