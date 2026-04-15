@@ -54,6 +54,7 @@ try:
     _STEADY_CURSOR = CursorShape.BLOCK  # Non-blinking block cursor
 except (ImportError, AttributeError):
     _STEADY_CURSOR = None
+import subprocess
 import threading
 import queue
 
@@ -1851,6 +1852,14 @@ class HermesCLI:
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+
+    def _play_completion_sound(self) -> None:
+        """Play a short completion sound. Non-blocking, fire-and-forget."""
+        subprocess.Popen(
+            ["afplay", "/System/Library/Sounds/Ping.aiff"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -5772,8 +5781,7 @@ class HermesCLI:
 
                 # Play bell if enabled
                 if self.bell_on_complete:
-                    sys.stdout.write("\a")
-                    sys.stdout.flush()
+                    self._play_completion_sound()
 
             except Exception as e:
                 # Same TUI refresh pattern as success path (#2718)
@@ -5895,8 +5903,7 @@ class HermesCLI:
                     _cprint("  💬 /btw: (no response)")
 
                 if self.bell_on_complete:
-                    sys.stdout.write("\a")
-                    sys.stdout.flush()
+                    self._play_completion_sound()
 
             except Exception as e:
                 if self._app:
@@ -7331,10 +7338,21 @@ class HermesCLI:
 
             self._invalidate()
 
+            # Start persistent beep loop while waiting for approval
+            _stop_beep = threading.Event()
+            def _beep_loop():
+                while not _stop_beep.is_set():
+                    sys.stdout.write("\a\a")
+                    sys.stdout.flush()
+                    _stop_beep.wait(1.0)
+            _beep_thread = threading.Thread(target=_beep_loop, daemon=True)
+            _beep_thread.start()
+
             _last_countdown_refresh = _time.monotonic()
             while True:
                 try:
                     result = response_queue.get(timeout=1)
+                    _stop_beep.set()
                     self._approval_state = None
                     self._approval_deadline = 0
                     self._invalidate()
@@ -7348,6 +7366,7 @@ class HermesCLI:
                         _last_countdown_refresh = now
                         self._invalidate()
 
+            _stop_beep.set()
             self._approval_state = None
             self._approval_deadline = 0
             self._invalidate()
@@ -7890,8 +7909,7 @@ class HermesCLI:
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.
             if self.bell_on_complete:
-                sys.stdout.write("\a")
-                sys.stdout.flush()
+                self._play_completion_sound()
 
             # Notify when iteration budget was hit
             if result and not result.get("completed") and not result.get("interrupted"):
