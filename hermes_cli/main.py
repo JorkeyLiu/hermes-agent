@@ -410,15 +410,17 @@ def _session_delete_picker(sessions: list) -> set[str]:
                     if filtered: cursor = (cursor - 1) % len(filtered)
                 elif key in (curses.KEY_DOWN,):
                     if filtered: cursor = (cursor + 1) % len(filtered)
-                elif key in (32,):  # Space
+                elif key in (32, getattr(curses, 'KEY_SPACE', 32)): # Space
                     if filtered:
                         sid = filtered[cursor]["id"]
-                        if sid in selected: selected.remove(sid)
-                        else: selected.add(sid)
+                        if sid in selected: 
+                            selected.remove(sid)
+                        else: 
+                            selected.add(sid)
                 elif key in (curses.KEY_ENTER, 10, 13):
                     if selected:
                         result_holder[0] = selected
-                    return
+                        return
                 elif key == 27:  # Esc
                     if search_text:
                         search_text = ""
