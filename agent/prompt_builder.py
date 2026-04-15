@@ -916,6 +916,38 @@ def load_soul_md() -> Optional[str]:
         return None
 
 
+def load_principles_md() -> Optional[str]:
+    """Load PRINCIPLES.md from HERMES_HOME and return its content, or None.
+
+    PRINCIPLES.md is a user-authored constitutional file that defines
+    higher-priority behavioral constraints.  When present, it is injected
+    as slot #0.5 — right after identity, before all other guidance — so
+    it carries the strongest binding force among all prompt layers.
+
+    Follows the same load pattern as load_soul_md(): security-scan,
+    truncate, return content or None.  Fails silently on any error.
+    """
+    try:
+        from hermes_cli.config import ensure_hermes_home
+        ensure_hermes_home()
+    except Exception as e:
+        logger.debug("Could not ensure HERMES_HOME before loading PRINCIPLES.md: %s", e)
+
+    principles_path = get_hermes_home() / "PRINCIPLES.md"
+    if not principles_path.exists():
+        return None
+    try:
+        content = principles_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return None
+        content = _scan_context_content(content, "PRINCIPLES.md")
+        content = _truncate_content(content, "PRINCIPLES.md")
+        return content
+    except Exception as e:
+        logger.debug("Could not read PRINCIPLES.md from %s: %s", principles_path, e)
+        return None
+
+
 def _load_hermes_md(cwd_path: Path) -> str:
     """.hermes.md / HERMES.md — walk to git root."""
     hermes_md_path = _find_hermes_md(cwd_path)
