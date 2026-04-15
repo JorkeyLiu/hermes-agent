@@ -5528,8 +5528,8 @@ Examples:
     sessions_export.add_argument("--source", help="Filter by source")
     sessions_export.add_argument("--session-id", help="Export a specific session")
 
-    sessions_delete = sessions_subparsers.add_parser("delete", help="Delete a specific session")
-    sessions_delete.add_argument("session_id", help="Session ID to delete")
+    sessions_delete = sessions_subparsers.add_parser("delete", help="Delete one or more sessions")
+    sessions_delete.add_argument("session_ids", nargs="+", help="Session ID(s) to delete")
     sessions_delete.add_argument("--yes", "-y", action="store_true", help="Skip confirmation")
 
     sessions_prune = sessions_subparsers.add_parser("prune", help="Delete old sessions")
@@ -5626,18 +5626,48 @@ Examples:
                     print(f"Exported {len(sessions)} sessions to {args.output}")
 
         elif action == "delete":
-            resolved_session_id = db.resolve_session_id(args.session_id)
-            if not resolved_session_id:
-                print(f"Session '{args.session_id}' not found.")
+            from hermes_cli.config import get_hermes_home
+            sessions_dir = get_hermes_home() / "sessions"
+            
+            ids_to_delete = args.session_ids
+            resolved_ids = []
+            for sid in ids_to_delete:
+                resolved = db.resolve_session_id(sid)
+                if resolved:
+                    resolved_ids.append(resolved)
+                else:
+                    print(f"Session '{sid}' not found. Skipping.")
+
+            if not resolved_ids:
                 return
+
             if not args.yes:
-                if not _confirm_prompt(f"Delete session '{resolved_session_id}' and all its messages? [y/N] "):
+                id_list_str = ", ".join(resolved_ids[:5]) + ("..." if len(resolved_ids) > 5 else "")
+                if not _confirm_prompt(f"Delete {len(resolved_ids)} session(s) ({id_list_str}) and all their messages/files? [y/N] "):
                     print("Cancelled.")
                     return
-            if db.delete_session(resolved_session_id):
-                print(f"Deleted session '{resolved_session_id}'.")
-            else:
-                print(f"Session '{args.session_id}' not found.")
+
+            success_count = 0
+            for rid in resolved_ids:
+                # 1. Delete from Database
+                if db.delete_session(rid):
+                    # 2. Delete physical file
+                    # Try both 'session_<id>.json' and '<id>.json'
+                    file_path = sessions_dir / f"session_{rid}.json"
+                    if not file_path.exists():
+                        file_path = sessions_dir / f"{rid}.json"
+                    
+                    if file_path.exists():
+                        try:
+                            file_path.unlink()
+                        except Exception as e:
+                            print(f"Warning: Failed to delete file {file_path.name}: {e}")
+                    
+                    success_count += 1
+                else:
+                    print(f"Failed to delete session record for '{rid}'.")
+
+            print(f"Successfully deleted {success_count} session(s).")
 
         elif action == "prune":
             days = args.older_than
