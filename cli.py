@@ -2913,6 +2913,17 @@ class HermesCLI:
             # Store reference for atexit memory provider shutdown
             global _active_agent_ref
             _active_agent_ref = self.agent
+
+            # When resuming, estimate context tokens so the status bar shows
+            # a non-zero value before the first API call updates it precisely.
+            if self._resumed and self.conversation_history:
+                try:
+                    from agent.model_metadata import estimate_messages_tokens_rough
+                    estimated = estimate_messages_tokens_rough(self.conversation_history)
+                    if estimated > 0:
+                        self.agent.context_compressor.last_prompt_tokens = estimated
+                except Exception:
+                    pass
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
@@ -4213,6 +4224,16 @@ class HermesCLI:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):
                 self.agent._invalidate_system_prompt()
+            # Re-estimate context tokens so the status bar shows a non-zero
+            # value before the next API call updates it precisely.
+            if self.conversation_history:
+                try:
+                    from agent.model_metadata import estimate_messages_tokens_rough
+                    estimated = estimate_messages_tokens_rough(self.conversation_history)
+                    if estimated > 0:
+                        self.agent.context_compressor.last_prompt_tokens = estimated
+                except Exception:
+                    pass
 
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
         msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
