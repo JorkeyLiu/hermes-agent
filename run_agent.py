@@ -7247,6 +7247,25 @@ class AIAgent:
                 choices=function_args.get("choices"),
                 callback=self.clarify_callback,
             )
+        elif function_name == "skill_manage" and function_args.get("action") == "create":
+            # Intercept skill creation to add user confirmation
+            from tools.skill_manager_tool import skill_manage as _skill_manage
+
+            def _skill_confirm(skill_name: str) -> str:
+                """Ask user whether to keep or delete a newly created skill."""
+                if not self.clarify_callback:
+                    return "保留"  # No callback available, keep by default
+                question = f"Skill '{skill_name}' 已创建。保留还是删除？"
+                choices = ["保留", "删除"]
+                return self.clarify_callback(question, choices)
+
+            return _skill_manage(
+                action=function_args.get("action", ""),
+                name=function_args.get("name", ""),
+                content=function_args.get("content"),
+                category=function_args.get("category"),
+                confirm_callback=_skill_confirm,
+            )
         elif function_name == "delegate_task":
             from tools.delegate_tool import delegate_task as _delegate_task
             return _delegate_task(
