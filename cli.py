@@ -3126,24 +3126,33 @@ class HermesCLI:
         return True
 
     def _display_resumed_history(self):
-        """Render a compact recap of previous conversation messages.
+        """Render a recap of previous conversation messages.
+
+        Behavior depends on the ``resume_display`` config setting:
+        - ``minimal`` — skip display entirely.
+        - ``compact`` — truncated recap of the last 10 exchanges with
+          message length limits (300 chars user, 200 chars assistant).
+        - ``full`` — show the complete conversation history without
+          content truncation.
 
         Uses Rich markup with dim/muted styling so the recap is visually
-        distinct from the active conversation.  Caps the display at the
-        last ``MAX_DISPLAY_EXCHANGES`` user/assistant exchanges and shows
-        an indicator for earlier hidden messages.
+        distinct from the active conversation.
         """
         if not self.conversation_history:
             return
 
         # Check config: resume_display setting
+        #   "minimal"  → skip display entirely
+        #   "compact"  → truncated recap (last N exchanges, short messages)
+        #   "full"     → full history, no content truncation
         if self.resume_display == "minimal":
             return
 
-        MAX_DISPLAY_EXCHANGES = 10   # max user+assistant pairs to show
-        MAX_USER_LEN = 300           # truncate user messages
-        MAX_ASST_LEN = 200           # truncate assistant text
-        MAX_ASST_LINES = 3           # max lines of assistant text
+        is_compact = self.resume_display == "compact"
+        MAX_DISPLAY_EXCHANGES = 10   # max user+assistant pairs to show (compact only)
+        MAX_USER_LEN = 300           # truncate user messages (compact only)
+        MAX_ASST_LEN = 200           # truncate assistant text (compact only)
+        MAX_ASST_LINES = 3           # max lines of assistant text (compact only)
 
         def _strip_reasoning(text: str) -> str:
             """Remove <REASONING_SCRATCHPAD>...</REASONING_SCRATCHPAD> blocks
@@ -3185,7 +3194,7 @@ class HermesCLI:
                         elif isinstance(part, dict) and part.get("type") == "image_url":
                             parts.append("[image]")
                     text = " ".join(parts)
-                if len(text) > MAX_USER_LEN:
+                if len(text) > MAX_USER_LEN and is_compact:
                     text = text[:MAX_USER_LEN] + "..."
                 entries.append(("user", text))
 
@@ -3196,11 +3205,12 @@ class HermesCLI:
                 full_parts = []  # un-truncated version
                 if text:
                     full_parts.append(text)
-                    lines = text.splitlines()
-                    if len(lines) > MAX_ASST_LINES:
-                        text = "\n".join(lines[:MAX_ASST_LINES]) + " ..."
-                    if len(text) > MAX_ASST_LEN:
-                        text = text[:MAX_ASST_LEN] + "..."
+                    if is_compact:
+                        lines = text.splitlines()
+                        if len(lines) > MAX_ASST_LINES:
+                            text = "\n".join(lines[:MAX_ASST_LINES]) + " ..."
+                        if len(text) > MAX_ASST_LEN:
+                            text = text[:MAX_ASST_LEN] + "..."
                     parts.append(text)
                 if tool_calls:
                     tc_count = len(tool_calls)
@@ -3228,9 +3238,9 @@ class HermesCLI:
         if not entries:
             return
 
-        # Determine if we need to truncate
+        # Determine if we need to truncate (compact mode only)
         skipped = 0
-        if len(entries) > MAX_DISPLAY_EXCHANGES * 2:
+        if is_compact and len(entries) > MAX_DISPLAY_EXCHANGES * 2:
             skipped = len(entries) - MAX_DISPLAY_EXCHANGES * 2
             entries = entries[skipped:]
 
@@ -4275,6 +4285,8 @@ class HermesCLI:
                 f" ({msg_count} user message{'s' if msg_count != 1 else ''},"
                 f" {len(self.conversation_history)} total)"
             )
+            # Show previous conversation recap (same as startup resume)
+            self._display_resumed_history()
         else:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
 

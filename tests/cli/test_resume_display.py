@@ -162,8 +162,8 @@ class TestDisplayResumedHistory:
         assert "web_search" in output
         assert "web_extract" in output
 
-    def test_long_user_message_truncated(self):
-        cli = _make_cli()
+    def test_long_user_message_truncated_compact(self):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "compact"}})
         long_text = "A" * 500
         cli.conversation_history = [
             {"role": "user", "content": long_text},
@@ -179,9 +179,9 @@ class TestDisplayResumedHistory:
         a_count = output.count("A")
         assert 200 <= a_count <= 310  # roughly 300 chars (±panel padding)
 
-    def test_long_assistant_message_truncated(self):
-        """Non-last assistant messages are still truncated."""
-        cli = _make_cli()
+    def test_long_assistant_message_truncated_compact(self):
+        """Non-last assistant messages are truncated in compact mode."""
+        cli = _make_cli(config_overrides={"display": {"resume_display": "compact"}})
         long_text = "B" * 400
         cli.conversation_history = [
             {"role": "user", "content": "Tell me a lot."},
@@ -196,9 +196,9 @@ class TestDisplayResumedHistory:
         # The last assistant message shown in full
         assert "Short final reply." in output
 
-    def test_multiline_assistant_truncated(self):
-        """Non-last multiline assistant messages are truncated to 3 lines."""
-        cli = _make_cli()
+    def test_multiline_assistant_truncated_compact(self):
+        """Non-last multiline assistant messages are truncated to 3 lines in compact mode."""
+        cli = _make_cli(config_overrides={"display": {"resume_display": "compact"}})
         multi = "\n".join([f"Line {i}" for i in range(20)])
         cli.conversation_history = [
             {"role": "user", "content": "Show me lines."},
@@ -245,8 +245,8 @@ class TestDisplayResumedHistory:
         assert "Line 10" in output
         assert "Line 19" in output
 
-    def test_large_history_shows_truncation_indicator(self):
-        cli = _make_cli()
+    def test_large_history_shows_truncation_indicator_compact(self):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "compact"}})
         cli.conversation_history = _large_history(n_exchanges=15)
         output = self._capture_display(cli)
 
@@ -278,6 +278,50 @@ class TestDisplayResumedHistory:
         output = self._capture_display(cli)
 
         assert output.strip() == ""
+
+    def test_full_mode_no_user_message_truncation(self):
+        """Full mode (default) shows complete user messages without truncation."""
+        cli = _make_cli()
+        long_text = "A" * 500
+        cli.conversation_history = [
+            {"role": "user", "content": long_text},
+            {"role": "assistant", "content": "OK."},
+        ]
+        output = self._capture_display(cli)
+
+        # All 500 chars should be present (Rich panel may wrap lines)
+        assert output.count("A") >= 490
+        # No truncation indicator
+        assert "A" * 300 + "..." not in output
+
+    def test_full_mode_no_assistant_message_truncation(self):
+        """Full mode shows all assistant messages in full, not just the last."""
+        cli = _make_cli()
+        long_text = "B" * 400
+        cli.conversation_history = [
+            {"role": "user", "content": "Tell me a lot."},
+            {"role": "assistant", "content": long_text},
+            {"role": "user", "content": "And more?"},
+            {"role": "assistant", "content": "Short final reply."},
+        ]
+        output = self._capture_display(cli)
+
+        # All 400 B chars should be present (Rich panel may wrap lines)
+        assert output.count("B") >= 390
+        # No truncation indicator
+        assert "..." not in output.split("And more?")[0]
+        assert "Short final reply." in output
+
+    def test_full_mode_shows_all_exchanges(self):
+        """Full mode shows all exchanges, no exchange count limit."""
+        cli = _make_cli()
+        cli.conversation_history = _large_history(n_exchanges=15)
+        output = self._capture_display(cli)
+
+        # All exchanges should be present (no truncation indicator)
+        assert "earlier messages" not in output
+        assert "Question #1" in output
+        assert "Question #15" in output
 
     def test_panel_has_title(self):
         cli = _make_cli()
