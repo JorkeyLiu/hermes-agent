@@ -1932,6 +1932,15 @@ class HermesCLI:
         }
 
         if not agent:
+            # Agent not yet initialized (lazy init) — use cached estimates
+            # from resume so the status bar shows a non-zero value.
+            if getattr(self, "_estimated_context_tokens", 0):
+                snapshot["context_tokens"] = self._estimated_context_tokens
+                if getattr(self, "_estimated_context_length", 0):
+                    snapshot["context_length"] = self._estimated_context_length
+                    snapshot["context_percent"] = max(0, min(100, round(
+                        (self._estimated_context_tokens / self._estimated_context_length) * 100
+                    )))
             return snapshot
 
         snapshot["session_input_tokens"] = getattr(agent, "session_input_tokens", 0) or 0
