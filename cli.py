@@ -1929,6 +1929,15 @@ class HermesCLI:
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
+        elif getattr(self, "_estimated_context_tokens", 0):
+            # Agent not yet initialized (lazy init) but we have cached estimates
+            # from resume — show them so the status bar is useful before first message.
+            snapshot["context_tokens"] = self._estimated_context_tokens
+            if getattr(self, "_estimated_context_length", 0):
+                snapshot["context_length"] = self._estimated_context_length
+                snapshot["context_percent"] = max(0, min(100, round(
+                    (self._estimated_context_tokens / self._estimated_context_length) * 100
+                )))
 
         return snapshot
 
@@ -8220,6 +8229,18 @@ class HermesCLI:
         if self._resumed:
             if self._preload_resumed_session():
                 self._display_resumed_history()
+        # Cache estimated context tokens for the status bar before agent init.
+        # Agent is lazily created on first message; this lets the status bar
+        # show a non-zero context estimate while waiting for user input.
+        if self._resumed and self.conversation_history and self.agent is None:
+            try:
+                from agent.model_metadata import estimate_messages_tokens_rough, get_model_context_length
+                self._estimated_context_tokens = estimate_messages_tokens_rough(self.conversation_history)
+                self._estimated_context_length = get_model_context_length(
+                    self.model, base_url=self.base_url, provider=self.provider,
+                )
+            except Exception:
+                pass
 
         try:
             from hermes_cli.skin_engine import get_active_skin
