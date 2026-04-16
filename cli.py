@@ -7245,6 +7245,16 @@ class HermesCLI:
         # Trigger prompt_toolkit repaint from this (non-main) thread
         self._invalidate()
 
+        # Start persistent beep loop while waiting for clarify response
+        _stop_beep = threading.Event()
+        def _beep_loop():
+            while not _stop_beep.is_set():
+                sys.stdout.write("\a\a")
+                sys.stdout.flush()
+                _stop_beep.wait(1.0)
+        _beep_thread = threading.Thread(target=_beep_loop, daemon=True)
+        _beep_thread.start()
+
         # Poll for the user's response.  The countdown in the hint line
         # updates on each invalidate — but frequent repaints cause visible
         # flicker in some terminals (Kitty, ghostty).  We only refresh the
@@ -7258,6 +7268,7 @@ class HermesCLI:
         while True:
             try:
                 result = response_queue.get(timeout=1)
+                _stop_beep.set()
                 self._clarify_deadline = 0
                 return result
             except queue.Empty:
@@ -7274,6 +7285,7 @@ class HermesCLI:
                     self._invalidate()
 
         # Timed out — tear down the UI and let the agent decide
+        _stop_beep.set()
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
