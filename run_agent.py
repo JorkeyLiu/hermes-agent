@@ -1021,16 +1021,12 @@ class AIAgent:
                             f"was found. Set the {_env_hint} environment "
                             f"variable, or switch to a different provider with `hermes model`."
                         )
-                    # Final fallback: try raw OpenRouter key
-                    client_kwargs = {
-                        "api_key": os.getenv("OPENROUTER_API_KEY", ""),
-                        "base_url": OPENROUTER_BASE_URL,
-                        "default_headers": {
-                            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-                            "X-OpenRouter-Title": "Hermes Agent",
-                            "X-OpenRouter-Categories": "productivity,cli-agent",
-                        },
-                    }
+                    # No provider configured — reject with a clear message.
+                    raise RuntimeError(
+                        "No LLM provider configured. Run `hermes model` to "
+                        "select a provider, or run `hermes setup` for first-time "
+                        "configuration."
+                    )
             
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
@@ -7278,6 +7274,25 @@ class AIAgent:
                 question=function_args.get("question", ""),
                 choices=function_args.get("choices"),
                 callback=self.clarify_callback,
+            )
+        elif function_name == "skill_manage" and function_args.get("action") == "create":
+            # Intercept skill creation to add user confirmation
+            from tools.skill_manager_tool import skill_manage as _skill_manage
+
+            def _skill_confirm(skill_name: str) -> str:
+                """Ask user whether to keep or delete a newly created skill."""
+                if not self.clarify_callback:
+                    return "保留"  # No callback available, keep by default
+                question = f"Skill '{skill_name}' 已创建。保留还是删除？"
+                choices = ["保留", "删除"]
+                return self.clarify_callback(question, choices)
+
+            return _skill_manage(
+                action=function_args.get("action", ""),
+                name=function_args.get("name", ""),
+                content=function_args.get("content"),
+                category=function_args.get("category"),
+                confirm_callback=_skill_confirm,
             )
         elif function_name == "delegate_task":
             from tools.delegate_tool import delegate_task as _delegate_task

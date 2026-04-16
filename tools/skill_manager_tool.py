@@ -301,7 +301,7 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
 # Core actions
 # =============================================================================
 
-def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
+def _create_skill(name: str, content: str, category: str = None, confirm_callback=None) -> Dict[str, Any]:
     """Create a new user skill with SKILL.md content."""
     # Validate name
     err = _validate_name(name)
@@ -342,6 +342,20 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if scan_error:
         shutil.rmtree(skill_dir, ignore_errors=True)
         return {"success": False, "error": scan_error}
+
+    # --- User confirmation hook ---
+    if confirm_callback:
+        try:
+            user_response = confirm_callback(name)
+            if user_response and "删除" in str(user_response).lower():
+                shutil.rmtree(skill_dir, ignore_errors=True)
+                return {
+                    "success": False,
+                    "error": f"User chose to delete the newly created skill '{name}'.",
+                    "deleted": True,
+                }
+        except Exception:
+            pass  # If callback fails, keep the skill (fail-open)
 
     result = {
         "success": True,
@@ -623,6 +637,7 @@ def skill_manage(
     old_string: str = None,
     new_string: str = None,
     replace_all: bool = False,
+    confirm_callback=None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
@@ -632,7 +647,7 @@ def skill_manage(
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
-        result = _create_skill(name, content, category)
+        result = _create_skill(name, content, category, confirm_callback=confirm_callback)
 
     elif action == "edit":
         if not content:
@@ -784,6 +799,7 @@ registry.register(
         file_content=args.get("file_content"),
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
-        replace_all=args.get("replace_all", False)),
+        replace_all=args.get("replace_all", False),
+        confirm_callback=kw.get("confirm_callback")),
     emoji="📝",
 )
