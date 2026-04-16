@@ -2945,6 +2945,17 @@ class HermesCLI:
             # Store reference for atexit memory provider shutdown
             global _active_agent_ref
             _active_agent_ref = self.agent
+
+            # When resuming, estimate context tokens so the status bar shows
+            # a non-zero value before the first API call updates it precisely.
+            if self._resumed and self.conversation_history:
+                try:
+                    from agent.model_metadata import estimate_messages_tokens_rough
+                    estimated = estimate_messages_tokens_rough(self.conversation_history)
+                    if estimated > 0:
+                        self.agent.context_compressor.last_prompt_tokens = estimated
+                except Exception:
+                    pass
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
@@ -3929,23 +3940,14 @@ class HermesCLI:
     
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
-        from hermes_constants import get_hermes_home, display_hermes_home
+        from hermes_constants import display_hermes_home
+        from hermes_cli.profiles import get_active_profile_name
 
-        home = get_hermes_home()
         display = display_hermes_home()
-
-        profiles_parent = Path.home() / ".hermes" / "profiles"
-        try:
-            rel = home.relative_to(profiles_parent)
-            profile_name = str(rel).split("/")[0]
-        except ValueError:
-            profile_name = None
+        profile_name = get_active_profile_name()
 
         print()
-        if profile_name:
-            print(f"  Profile: {profile_name}")
-        else:
-            print("  Profile: default")
+        print(f"  Profile: {profile_name}")
         print(f"  Home:    {display}")
         print()
 
@@ -4132,6 +4134,8 @@ class HermesCLI:
                 self.agent.flush_memories(self.conversation_history)
             except (Exception, KeyboardInterrupt):
                 pass
+            # Trigger memory extraction on the old session before session_id rotates.
+            self.agent.commit_memory_session(self.conversation_history)
             self._notify_session_boundary("on_session_finalize")
         elif self.agent:
             # First session or empty history — still finalize the old session
@@ -4252,6 +4256,16 @@ class HermesCLI:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):
                 self.agent._invalidate_system_prompt()
+            # Re-estimate context tokens so the status bar shows a non-zero
+            # value before the next API call updates it precisely.
+            if self.conversation_history:
+                try:
+                    from agent.model_metadata import estimate_messages_tokens_rough
+                    estimated = estimate_messages_tokens_rough(self.conversation_history)
+                    if estimated > 0:
+                        self.agent.context_compressor.last_prompt_tokens = estimated
+                except Exception:
+                    pass
 
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
         msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
@@ -5524,7 +5538,8 @@ class HermesCLI:
                         version = f" v{p['version']}" if p["version"] else ""
                         tools = f"{p['tools']} tools" if p["tools"] else ""
                         hooks = f"{p['hooks']} hooks" if p["hooks"] else ""
-                        parts = [x for x in [tools, hooks] if x]
+                        commands = f"{p['commands']} commands" if p.get("commands") else ""
+                        parts = [x for x in [tools, hooks, commands] if x]
                         detail = f" ({', '.join(parts)})" if parts else ""
                         error = f" — {p['error']}" if p["error"] else ""
                         print(f"  {status} {p['name']}{version}{detail}{error}")
