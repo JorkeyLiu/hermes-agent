@@ -402,14 +402,27 @@ def load_cli_config() -> Dict[str, Any]:
     # filesystem is directly accessible.  For ALL remote/container backends
     # (ssh, docker, modal, singularity), the host path doesn't exist on the
     # target -- remove the key so terminal_tool.py uses its per-backend default.
-    if terminal_config.get("cwd") in (".", "auto", "cwd"):
-        effective_backend = terminal_config.get("env_type", "local")
-        if effective_backend == "local":
-            terminal_config["cwd"] = os.getcwd()
-            defaults["terminal"]["cwd"] = terminal_config["cwd"]
+    #
+    # GUARD: If TERMINAL_CWD is already set to a real absolute path (by the
+    # gateway's config bridge earlier in the process), don't clobber it.
+    # This prevents a lazy import of cli.py during gateway runtime from
+    # rewriting TERMINAL_CWD to the service's working directory.
+    # See issue #10817.
+    _CWD_PLACEHOLDERS = (".", "auto", "cwd")
+    if terminal_config.get("cwd") in _CWD_PLACEHOLDERS:
+        _existing_cwd = os.environ.get("TERMINAL_CWD", "")
+        if _existing_cwd and _existing_cwd not in _CWD_PLACEHOLDERS and os.path.isabs(_existing_cwd):
+            # Gateway (or earlier startup) already resolved a real path — keep it
+            terminal_config["cwd"] = _existing_cwd
+            defaults["terminal"]["cwd"] = _existing_cwd
         else:
-            # Remove so TERMINAL_CWD stays unset → tool picks backend default
-            terminal_config.pop("cwd", None)
+            effective_backend = terminal_config.get("env_type", "local")
+            if effective_backend == "local":
+                terminal_config["cwd"] = os.getcwd()
+                defaults["terminal"]["cwd"] = terminal_config["cwd"]
+            else:
+                # Remove so TERMINAL_CWD stays unset → tool picks backend default
+                terminal_config.pop("cwd", None)
     
     env_mappings = {
         "env_type": "TERMINAL_ENV",
@@ -2054,7 +2067,17 @@ class HermesCLI:
         """Return the visible height for the spinner/status text line above the status bar."""
         if not getattr(self, "_spinner_text", ""):
             return 0
-        return 0 if self._use_minimal_tui_chrome(width=width) else 1
+        if self._use_minimal_tui_chrome(width=width):
+            return 0
+        # Compute how many lines the spinner text needs when wrapped.
+        # The rendered text is "  {emoji} {label}  ({elapsed})" — about
+        # len(_spinner_text) + 16 chars for indent + timer suffix.
+        width = width or self._get_tui_terminal_width()
+        if width and width > 10:
+            import math
+            text_len = len(self._spinner_text) + 16  # indent + timer
+            return max(1, math.ceil(text_len / width))
+        return 1
 
     def _get_voice_status_fragments(self, width: Optional[int] = None):
         """Return the voice status bar fragments for the interactive TUI."""
@@ -6279,13 +6302,21 @@ class HermesCLI:
     def _toggle_yolo(self):
         """Toggle YOLO mode — skip all dangerous command approval prompts."""
         import os
+        from hermes_cli.colors import Colors as _Colors
+
         current = bool(os.environ.get("HERMES_YOLO_MODE"))
         if current:
             os.environ.pop("HERMES_YOLO_MODE", None)
-            self.console.print("  ⚠ YOLO mode [bold red]OFF[/] — dangerous commands will require approval.")
+            _cprint(
+                f"  ⚠ YOLO mode {_Colors.BOLD}{_Colors.RED}OFF{_Colors.RESET}"
+                " — dangerous commands will require approval."
+            )
         else:
             os.environ["HERMES_YOLO_MODE"] = "1"
-            self.console.print("  ⚡ YOLO mode [bold green]ON[/] — all commands auto-approved. Use with caution.")
+            _cprint(
+                f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
+                " — all commands auto-approved. Use with caution."
+            )
 
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.
@@ -7862,7 +7893,33 @@ class HermesCLI:
                     # Fallback for non-interactive mode (e.g., single-query)
                     agent_thread.join(0.1)
 
-            agent_thread.join()  # Ensure agent thread completes
+            # Wait for the agent thread to finish.  After an interrupt the
+            # agent may take a few seconds to clean up (kill subprocess, persist
+            # session).  Poll instead of a blocking join so the process_loop
+            # stays responsive — if the user sent another interrupt or the
+            # agent gets stuck, we can break out instead of freezing forever.
+            if interrupt_msg is not None:
+                # Interrupt path: poll briefly, then move on.  The agent
+                # thread is daemon — it dies on process exit regardless.
+                for _wait_tick in range(50):  # 50 * 0.2s = 10s max
+                    agent_thread.join(timeout=0.2)
+                    if not agent_thread.is_alive():
+                        break
+                    # Check if user fired ANOTHER interrupt (Ctrl+C sets
+                    # _should_exit which process_loop checks on next pass).
+                    if getattr(self, '_should_exit', False):
+                        break
+                if agent_thread.is_alive():
+                    logger.warning(
+                        "Agent thread still alive after interrupt "
+                        "(thread %s). Daemon thread will be cleaned up "
+                        "on exit.",
+                        agent_thread.ident,
+                    )
+            else:
+                # Normal completion: agent thread should be done already,
+                # but guard against edge cases.
+                agent_thread.join(timeout=30)
 
             # Proactively clean up async clients whose event loop is dead.
             # The agent thread may have created AsyncOpenAI clients bound
@@ -9177,6 +9234,7 @@ class HermesCLI:
         spinner_widget = Window(
             content=FormattedTextControl(get_spinner_text),
             height=get_spinner_height,
+            wrap_lines=True,
         )
 
         spacer = Window(
@@ -10136,6 +10194,11 @@ def main(
                 ):
                     cli.agent.quiet_mode = True
                     cli.agent.suppress_status_output = True
+                    # Suppress streaming display callbacks so stdout stays
+                    # machine-readable (no styled "Hermes" box, no tool-gen
+                    # status lines).  The response is printed once below.
+                    cli.agent.stream_delta_callback = None
+                    cli.agent.tool_gen_callback = None
                     result = cli.agent.run_conversation(
                         user_message=effective_query,
                         conversation_history=cli.conversation_history,
@@ -10143,7 +10206,8 @@ def main(
                     response = result.get("final_response", "") if isinstance(result, dict) else str(result)
                     if response:
                         print(response)
-                    print(f"\nsession_id: {cli.session_id}")
+                    # Session ID goes to stderr so piped stdout is clean.
+                    print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
                     
                     # Ensure proper exit code for automation wrappers
                     sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)

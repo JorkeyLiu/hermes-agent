@@ -1442,11 +1442,8 @@ def _model_flow_nous(config, current_model="", args=None):
         AuthError, format_auth_error,
         _login_nous, PROVIDER_REGISTRY,
     )
-    from hermes_cli.config import get_env_value, save_config, save_env_value
-    from hermes_cli.nous_subscription import (
-        apply_nous_provider_defaults,
-        get_nous_subscription_explainer_lines,
-    )
+    from hermes_cli.config import get_env_value, load_config, save_config, save_env_value
+    from hermes_cli.nous_subscription import prompt_enable_tool_gateway
     import argparse
 
     state = get_provider_auth_state("nous")
@@ -1465,9 +1462,12 @@ def _model_flow_nous(config, current_model="", args=None):
                 insecure=bool(getattr(args, "insecure", False)),
             )
             _login_nous(mock_args, PROVIDER_REGISTRY["nous"])
-            print()
-            for line in get_nous_subscription_explainer_lines():
-                print(line)
+            # Offer Tool Gateway enablement for paid subscribers
+            try:
+                _refreshed = load_config() or {}
+                prompt_enable_tool_gateway(_refreshed)
+            except Exception:
+                pass
         except SystemExit:
             print("Login cancelled or failed.")
             return
@@ -1575,18 +1575,10 @@ def _model_flow_nous(config, current_model="", args=None):
         if get_env_value("OPENAI_BASE_URL"):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
-        changed_defaults = apply_nous_provider_defaults(config)
         save_config(config)
         print(f"Default model set to: {selected} (via Nous Portal)")
-        if "tts" in changed_defaults:
-            print("TTS provider set to: OpenAI TTS via your Nous subscription")
-        else:
-            current_tts = str(config.get("tts", {}).get("provider") or "edge")
-            if current_tts.lower() not in {"", "edge"}:
-                print(f"Keeping your existing TTS provider: {current_tts}")
-        print()
-        for line in get_nous_subscription_explainer_lines():
-            print(line)
+        # Offer Tool Gateway enablement for paid subscribers
+        prompt_enable_tool_gateway(config)
     else:
         print("No change.")
 
@@ -5824,6 +5816,18 @@ Examples:
     memory_sub.add_parser("setup", help="Interactive provider selection and configuration")
     memory_sub.add_parser("status", help="Show current memory provider config")
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
+    _reset_parser = memory_sub.add_parser(
+        "reset",
+        help="Erase all built-in memory (MEMORY.md and USER.md)",
+    )
+    _reset_parser.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation prompt",
+    )
+    _reset_parser.add_argument(
+        "--target", choices=["all", "memory", "user"], default="all",
+        help="Which store to reset: 'all' (default), 'memory', or 'user'",
+    )
 
     def cmd_memory(args):
         sub = getattr(args, "memory_command", None)
@@ -5836,6 +5840,44 @@ Examples:
             save_config(config)
             print("\n  ✓ Memory provider: built-in only")
             print("  Saved to config.yaml\n")
+        elif sub == "reset":
+            from hermes_constants import get_hermes_home, display_hermes_home
+            mem_dir = get_hermes_home() / "memories"
+            target = getattr(args, "target", "all")
+            files_to_reset = []
+            if target in ("all", "memory"):
+                files_to_reset.append(("MEMORY.md", "agent notes"))
+            if target in ("all", "user"):
+                files_to_reset.append(("USER.md", "user profile"))
+
+            # Check what exists
+            existing = [(f, desc) for f, desc in files_to_reset if (mem_dir / f).exists()]
+            if not existing:
+                print(f"\n  Nothing to reset — no memory files found in {display_hermes_home()}/memories/\n")
+                return
+
+            print(f"\n  This will permanently erase the following memory files:")
+            for f, desc in existing:
+                path = mem_dir / f
+                size = path.stat().st_size
+                print(f"    ◆ {f} ({desc}) — {size:,} bytes")
+
+            if not getattr(args, "yes", False):
+                try:
+                    answer = input("\n  Type 'yes' to confirm: ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print("\n  Cancelled.\n")
+                    return
+                if answer != "yes":
+                    print("  Cancelled.\n")
+                    return
+
+            for f, desc in existing:
+                (mem_dir / f).unlink()
+                print(f"  ✓ Deleted {f} ({desc})")
+
+            print(f"\n  Memory reset complete. New sessions will start with a blank slate.")
+            print(f"  Files were in: {display_hermes_home()}/memories/\n")
         else:
             from hermes_cli.memory_setup import memory_command
             memory_command(args)
