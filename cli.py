@@ -7326,12 +7326,17 @@ class HermesCLI:
         _stop_beep = threading.Event()
         def _beep_loop():
             while not _stop_beep.is_set():
-                subprocess.Popen(
-                    ["afplay", "/System/Library/Sounds/Tink.aiff"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                _stop_beep.wait(1.0)
+                # Double beep pattern: beep-beep, pause, beep-beep
+                for _ in range(2):
+                    if _stop_beep.is_set():
+                        break
+                    subprocess.Popen(
+                        ["afplay", "/System/Library/Sounds/Tink.aiff"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    _stop_beep.wait(0.15)  # Short gap between double beeps
+                _stop_beep.wait(2.5)  # Longer pause between double-beep pairs
         _beep_thread = threading.Thread(target=_beep_loop, daemon=True)
         _beep_thread.start()
 
@@ -7459,12 +7464,17 @@ class HermesCLI:
             _stop_beep = threading.Event()
             def _beep_loop():
                 while not _stop_beep.is_set():
-                    subprocess.Popen(
-                        ["afplay", "/System/Library/Sounds/Tink.aiff"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    _stop_beep.wait(1.0)
+                    # Double beep pattern: beep-beep, pause, beep-beep
+                    for _ in range(2):
+                        if _stop_beep.is_set():
+                            break
+                        subprocess.Popen(
+                            ["afplay", "/System/Library/Sounds/Tink.aiff"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        _stop_beep.wait(0.15)  # Short gap between double beeps
+                    _stop_beep.wait(2.5)  # Longer pause between double-beep pairs
             _beep_thread = threading.Thread(target=_beep_loop, daemon=True)
             _beep_thread.start()
 
