@@ -7322,14 +7322,15 @@ class HermesCLI:
         self._invalidate()
 
         # Start persistent beep loop while waiting for clarify response
-        # Uses app.output.bell() to bypass patch_stdout (which swallows \a)
+        # Uses afplay (BEL characters don't trigger sound on some terminals)
         _stop_beep = threading.Event()
         def _beep_loop():
             while not _stop_beep.is_set():
-                if self._app and self._app.output:
-                    self._app.output.bell()
-                    self._app.output.bell()
-                    self._app.output.flush()
+                subprocess.Popen(
+                    ["afplay", "/System/Library/Sounds/Tink.aiff"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
                 _stop_beep.wait(1.0)
         _beep_thread = threading.Thread(target=_beep_loop, daemon=True)
         _beep_thread.start()
@@ -7454,14 +7455,15 @@ class HermesCLI:
             self._invalidate()
 
             # Start persistent beep loop while waiting for approval
-            # Uses app.output.bell() to bypass patch_stdout (which swallows \a)
+            # Uses afplay (BEL characters don't trigger sound on some terminals)
             _stop_beep = threading.Event()
             def _beep_loop():
                 while not _stop_beep.is_set():
-                    if self._app and self._app.output:
-                        self._app.output.bell()
-                        self._app.output.bell()
-                        self._app.output.flush()
+                    subprocess.Popen(
+                        ["afplay", "/System/Library/Sounds/Tink.aiff"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
                     _stop_beep.wait(1.0)
             _beep_thread = threading.Thread(target=_beep_loop, daemon=True)
             _beep_thread.start()
