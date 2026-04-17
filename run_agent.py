@@ -2454,22 +2454,9 @@ class AIAgent:
         import threading
 
         # Pick the right prompt based on which triggers fired.
-        # When multiple triggers fire, use the combined prompt + task suffix.
-        if review_tasks and (review_memory or review_skills):
-            # Task + (memory or skill): combined prompt with task tracking suffix
-            _task_suffix = (
-                "\n\n**Task Tracking**: Was this significant technical work "
-                "(debugging, development, research) with cross-session relevance? "
-                "If so, search ~/Documents/ObsidianNotes/计算机/Agent/ for existing "
-                "task tracking notes first, then create or update as needed."
-            )
-            if review_memory and review_skills:
-                prompt = self._COMBINED_REVIEW_PROMPT + _task_suffix
-            elif review_memory:
-                prompt = self._MEMORY_REVIEW_PROMPT + _task_suffix
-            else:
-                prompt = self._SKILL_REVIEW_PROMPT + _task_suffix
-        elif review_tasks:
+        # Note: task review is always spawned separately, so this method
+        # is either called for memory/skill OR for task — never both.
+        if review_tasks:
             prompt = self._TASK_REVIEW_PROMPT
         elif review_memory and review_skills:
             prompt = self._COMBINED_REVIEW_PROMPT
@@ -11431,16 +11418,28 @@ class AIAgent:
 
         # Background memory/skill/task review — runs AFTER the response is delivered
         # so it never competes with the user's task for model attention.
-        if final_response and not interrupted and (_should_review_memory or _should_review_skills or _should_review_tasks):
-            try:
-                self._spawn_background_review(
-                    messages_snapshot=list(messages),
-                    review_memory=_should_review_memory,
-                    review_skills=_should_review_skills,
-                    review_tasks=_should_review_tasks,
-                )
-            except Exception:
-                pass  # Background review is best-effort
+        # Task review is spawned SEPARATELY from memory/skill review so each
+        # gets a full, dedicated prompt (not a merged suffix).
+        if final_response and not interrupted:
+            # Memory + skill review (existing behavior)
+            if _should_review_memory or _should_review_skills:
+                try:
+                    self._spawn_background_review(
+                        messages_snapshot=list(messages),
+                        review_memory=_should_review_memory,
+                        review_skills=_should_review_skills,
+                    )
+                except Exception:
+                    pass
+            # Task tracking review (separate round with full _TASK_REVIEW_PROMPT)
+            if _should_review_tasks:
+                try:
+                    self._spawn_background_review(
+                        messages_snapshot=list(messages),
+                        review_tasks=True,
+                    )
+                except Exception:
+                    pass
 
         # Note: Memory provider on_session_end() + shutdown_all() are NOT
         # called here — run_conversation() is called once per user message in
