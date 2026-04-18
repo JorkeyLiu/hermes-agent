@@ -44,7 +44,8 @@ _EXTRA_ENV_KEYS = frozenset({
     "WEIXIN_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL_NAME", "WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY",
     "WEIXIN_ALLOWED_USERS", "WEIXIN_GROUP_ALLOWED_USERS", "WEIXIN_ALLOW_ALL_USERS",
     "BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD",
-    "QQ_APP_ID", "QQ_CLIENT_SECRET", "QQ_HOME_CHANNEL", "QQ_HOME_CHANNEL_NAME",
+    "QQ_APP_ID", "QQ_CLIENT_SECRET", "QQBOT_HOME_CHANNEL", "QQBOT_HOME_CHANNEL_NAME",
+    "QQ_HOME_CHANNEL", "QQ_HOME_CHANNEL_NAME",  # legacy aliases (pre-rename, still read for back-compat)
     "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS", "QQ_MARKDOWN_SUPPORT",
     "QQ_STT_API_KEY", "QQ_STT_BASE_URL", "QQ_STT_MODEL",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
@@ -417,6 +418,7 @@ DEFAULT_CONFIG = {
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
+        "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
         "camofox": {
             # When true, Hermes sends a stable profile-scoped userId to Camofox
             # so the server maps it to a persistent Firefox profile automatically.
@@ -678,6 +680,7 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        "auto_sync_bundled": True,  # If False, skip auto-copying new bundled skills on sync
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
@@ -777,7 +780,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 18,
+    "_config_version": 19,
 }
 
 # =============================================================================
@@ -856,6 +859,22 @@ OPTIONAL_ENV_VARS = {
     "XAI_BASE_URL": {
         "description": "xAI base URL override",
         "prompt": "xAI base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "NVIDIA_API_KEY": {
+        "description": "NVIDIA NIM API key (build.nvidia.com or local NIM endpoint)",
+        "prompt": "NVIDIA NIM API key",
+        "url": "https://build.nvidia.com/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "NVIDIA_BASE_URL": {
+        "description": "NVIDIA NIM base URL override (e.g. http://localhost:8000/v1 for local NIM)",
+        "prompt": "NVIDIA NIM base URL (leave empty for default)",
         "url": None,
         "password": False,
         "category": "provider",
@@ -997,6 +1016,30 @@ OPTIONAL_ENV_VARS = {
     "HERMES_QWEN_BASE_URL": {
         "description": "Qwen Portal base URL override (default: https://portal.qwen.ai/v1)",
         "prompt": "Qwen Portal base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "HERMES_GEMINI_CLIENT_ID": {
+        "description": "Google OAuth client ID for google-gemini-cli (optional; defaults to Google's public gemini-cli client)",
+        "prompt": "Google OAuth client ID (optional — leave empty to use the public default)",
+        "url": "https://console.cloud.google.com/apis/credentials",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "HERMES_GEMINI_CLIENT_SECRET": {
+        "description": "Google OAuth client secret for google-gemini-cli (optional)",
+        "prompt": "Google OAuth client secret (optional)",
+        "url": "https://console.cloud.google.com/apis/credentials",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "HERMES_GEMINI_PROJECT_ID": {
+        "description": "GCP project ID for paid Gemini tiers (free tier auto-provisions)",
+        "prompt": "GCP project ID for Gemini OAuth (leave empty for free tier)",
         "url": None,
         "password": False,
         "category": "provider",
@@ -1494,12 +1537,12 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Allow All QQ Users",
         "category": "messaging",
     },
-    "QQ_HOME_CHANNEL": {
+    "QQBOT_HOME_CHANNEL": {
         "description": "Default QQ channel/group for cron delivery and notifications",
         "prompt": "QQ Home Channel",
         "category": "messaging",
     },
-    "QQ_HOME_CHANNEL_NAME": {
+    "QQBOT_HOME_CHANNEL_NAME": {
         "description": "Display name for the QQ home channel",
         "prompt": "QQ Home Channel Name",
         "category": "messaging",

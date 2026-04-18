@@ -173,18 +173,36 @@ def _dir_hash(directory: Path) -> str:
     return hasher.hexdigest()
 
 
+def _load_auto_sync_bundled() -> bool:
+    """Check if auto_sync_bundled is enabled in config.yaml.
+
+    Returns True (default) if config doesn't exist or key is missing.
+    """
+    try:
+        import yaml
+        config_path = HERMES_HOME / "config.yaml"
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as f:
+                config = yaml.safe_load(f) or {}
+            return config.get("skills", {}).get("auto_sync_bundled", True)
+    except Exception:
+        pass
+    return True
+
+
 def sync_skills(quiet: bool = False) -> dict:
     """
     Sync bundled skills into ~/.hermes/skills/ using the manifest.
 
     Returns:
         dict with keys: copied (list), updated (list), skipped (int),
-                        user_modified (list), cleaned (list), total_bundled (int)
+                        skipped_auto (int), user_modified (list), cleaned (list),
+                        total_bundled (int)
     """
     bundled_dir = _get_bundled_dir()
     if not bundled_dir.exists():
         return {
-            "copied": [], "updated": [], "skipped": 0,
+            "copied": [], "updated": [], "skipped": 0, "skipped_auto": 0,
             "user_modified": [], "cleaned": [], "total_bundled": 0,
         }
 
@@ -198,12 +216,21 @@ def sync_skills(quiet: bool = False) -> dict:
     user_modified = []
     skipped = 0
 
+    auto_sync = _load_auto_sync_bundled()
+    skipped_auto = 0
+
     for skill_name, skill_src in bundled_skills:
         dest = _compute_relative_dest(skill_src, bundled_dir)
         bundled_hash = _dir_hash(skill_src)
 
         if skill_name not in manifest:
             # ── New skill — never offered before ──
+            if not auto_sync:
+                # Auto-sync disabled: skip new skills without adding to manifest,
+                # so they can be picked up later if auto_sync_bundled is re-enabled.
+                skipped += 1
+                skipped_auto += 1
+                continue
             try:
                 if dest.exists():
                     # User already has a skill with the same name — don't overwrite
@@ -300,10 +327,109 @@ def sync_skills(quiet: bool = False) -> dict:
         "copied": copied,
         "updated": updated,
         "skipped": skipped,
+        "skipped_auto": skipped_auto,
         "user_modified": user_modified,
         "cleaned": cleaned,
         "total_bundled": len(bundled_skills),
     }
+
+
+def reset_bundled_skill(name: str, restore: bool = False) -> dict:
+    """
+    Reset a bundled skill's manifest tracking so future syncs work normally.
+
+    When a user edits a bundled skill, subsequent syncs mark it as
+    ``user_modified`` and skip it forever — even if the user later copies
+    the bundled version back into place, because the manifest still holds
+    the *old* origin hash. This function breaks that loop.
+
+    Args:
+        name: The skill name (matches the manifest key / skill frontmatter name).
+        restore: If True, also delete the user's copy in SKILLS_DIR and let
+                 the next sync re-copy the current bundled version. If False
+                 (default), only clear the manifest entry — the user's
+                 current copy is preserved but future updates work again.
+
+    Returns:
+        dict with keys:
+          - ok: bool, whether the reset succeeded
+          - action: one of "manifest_cleared", "restored", "not_in_manifest",
+                    "bundled_missing"
+          - message: human-readable description
+          - synced: dict from sync_skills() if a sync was triggered, else None
+    """
+    manifest = _read_manifest()
+    bundled_dir = _get_bundled_dir()
+    bundled_skills = _discover_bundled_skills(bundled_dir)
+    bundled_by_name = {skill_name: skill_dir for skill_name, skill_dir in bundled_skills}
+
+    in_manifest = name in manifest
+    is_bundled = name in bundled_by_name
+
+    if not in_manifest and not is_bundled:
+        return {
+            "ok": False,
+            "action": "not_in_manifest",
+            "message": (
+                f"'{name}' is not a tracked bundled skill. Nothing to reset. "
+                f"(Hub-installed skills use `hermes skills uninstall`.)"
+            ),
+            "synced": None,
+        }
+
+    # Step 1: drop the manifest entry so next sync treats it as new
+    if in_manifest:
+        del manifest[name]
+        _write_manifest(manifest)
+
+    # Step 2 (optional): delete the user's copy so next sync re-copies bundled
+    deleted_user_copy = False
+    if restore:
+        if not is_bundled:
+            return {
+                "ok": False,
+                "action": "bundled_missing",
+                "message": (
+                    f"'{name}' has no bundled source — manifest entry cleared "
+                    f"but cannot restore from bundled (skill was removed upstream)."
+                ),
+                "synced": None,
+            }
+        # The destination mirrors the bundled path relative to bundled_dir.
+        dest = _compute_relative_dest(bundled_by_name[name], bundled_dir)
+        if dest.exists():
+            try:
+                shutil.rmtree(dest)
+                deleted_user_copy = True
+            except (OSError, IOError) as e:
+                return {
+                    "ok": False,
+                    "action": "manifest_cleared",
+                    "message": (
+                        f"Cleared manifest entry for '{name}' but could not "
+                        f"delete user copy at {dest}: {e}"
+                    ),
+                    "synced": None,
+                }
+
+    # Step 3: run sync to re-baseline (or re-copy if we deleted)
+    synced = sync_skills(quiet=True)
+
+    if restore and deleted_user_copy:
+        action = "restored"
+        message = f"Restored '{name}' from bundled source."
+    elif restore:
+        # Nothing on disk to delete, but we re-synced — acts like a fresh install
+        action = "restored"
+        message = f"Restored '{name}' (no prior user copy, re-copied from bundled)."
+    else:
+        action = "manifest_cleared"
+        message = (
+            f"Cleared manifest entry for '{name}'. Future `hermes update` runs "
+            f"will re-baseline against your current copy and accept upstream changes."
+        )
+
+    return {"ok": True, "action": action, "message": message, "synced": synced}
 
 
 if __name__ == "__main__":
@@ -314,6 +440,8 @@ if __name__ == "__main__":
         f"{len(result['updated'])} updated",
         f"{result['skipped']} unchanged",
     ]
+    if result.get("skipped_auto"):
+        parts.append(f"{result['skipped_auto']} auto-skilled (auto_sync_bundled=false)")
     if result["user_modified"]:
         parts.append(f"{len(result['user_modified'])} user-modified (kept)")
     if result["cleaned"]:
