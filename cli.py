@@ -59,6 +59,7 @@ except (ImportError, AttributeError):
 import threading
 import queue
 
+from agent.session_end_writer import maybe_write_session_raw
 from agent.usage_pricing import (
     CanonicalUsage,
     estimate_usage_cost,
@@ -1885,6 +1886,7 @@ class HermesCLI:
         self._pending_tool_info: dict = {}  # function_name -> list of (preview, args) for stacked scrollback
         self._last_scrollback_tool: str = ""  # last tool name printed to scrollback (for "new" dedup)
         self._command_running = False
+        self._session_tool_events: List[Dict[str, Any]] = []
         self._command_status = ""
         self._attached_images: list[Path] = []
         self._image_counter = 0
@@ -4211,19 +4213,55 @@ class HermesCLI:
         except Exception:
             pass
 
-    def new_session(self, silent=False):
-        """Start a fresh session with a new session ID and cleared agent state."""
-        if self.agent and self.conversation_history:
+    def _maybe_write_session_raw(self, end_reason: str) -> Optional[str]:
+        """Best-effort session-end RAW writer for CLI sessions."""
+        if not self.agent:
+            return None
+        try:
+            session_title = None
+            if self._session_db:
+                try:
+                    session_title = self._session_db.get_session_title(self.agent.session_id)
+                except Exception:
+                    session_title = None
+            written = maybe_write_session_raw(
+                session_id=self.agent.session_id,
+                messages=list(self.conversation_history or []),
+                tool_events=list(self._session_tool_events or []),
+                config=self.config,
+                session_title=session_title,
+                end_reason=end_reason,
+                model=getattr(self.agent, "model", None),
+                platform=getattr(self.agent, "platform", None) or "cli",
+            )
+            return written
+        except Exception:
+            logger.debug("Session-end RAW write failed", exc_info=True)
+            return None
+
+    def _finalize_current_session(self, end_reason: str, *, notify_plugin: bool = True) -> None:
+        """Flush memory/session-end artifacts before closing the current session."""
+        if not self.agent:
+            return
+        if self.conversation_history:
             try:
                 self.agent.flush_memories(self.conversation_history)
             except (Exception, KeyboardInterrupt):
                 pass
-            # Trigger memory extraction on the old session before session_id rotates.
-            self.agent.commit_memory_session(self.conversation_history)
+            try:
+                self.agent.commit_memory_session(self.conversation_history)
+            except (Exception, KeyboardInterrupt):
+                pass
+        if notify_plugin:
             self._notify_session_boundary("on_session_finalize")
-        elif self.agent:
-            # First session or empty history — still finalize the old session
-            self._notify_session_boundary("on_session_finalize")
+        self._maybe_write_session_raw(end_reason)
+        self._session_tool_events = []
+
+    def new_session(self, silent=False):
+        """Start a fresh session with a new session ID and cleared agent state."""
+        if self.agent:
+            self._finalize_current_session("new_session")
+        self._session_tool_events = []
 
         old_session_id = self.session_id
         if self._session_db and old_session_id:
@@ -4305,6 +4343,8 @@ class HermesCLI:
             return
 
         # End current session
+        if self.agent:
+            self._finalize_current_session("resumed_other")
         try:
             self._session_db.end_session(self.session_id, "resumed_other")
         except Exception:
@@ -4391,6 +4431,8 @@ class HermesCLI:
         parent_session_id = self.session_id
 
         # End the old session
+        if self.agent:
+            self._finalize_current_session("branched")
         try:
             self._session_db.end_session(self.session_id, "branched")
         except Exception:
@@ -6968,9 +7010,14 @@ class HermesCLI:
             self._spinner_text = f"{emoji} {label}"
             self._tool_start_time = _time.monotonic()
             # Store args for stacked scrollback line on completion
-            self._pending_tool_info.setdefault(function_name, []).append(
-                function_args if function_args is not None else {}
-            )
+            _normalized_args = function_args if function_args is not None else {}
+            self._pending_tool_info.setdefault(function_name, []).append(_normalized_args)
+            self._session_tool_events.append({
+                "event_type": "tool.started",
+                "name": function_name,
+                "args": _normalized_args,
+                "preview": preview,
+            })
             self._invalidate()
 
         if not self._voice_mode:
@@ -7013,6 +7060,12 @@ class HermesCLI:
             )
         except Exception:
             logger.debug("Edit diff preview failed for %s", function_name, exc_info=True)
+        finally:
+            self._session_tool_events.append({
+                "event_type": "tool.completed",
+                "name": function_name,
+                "args": function_args if function_args is not None else {},
+            })
 
     # ====================================================================
     # Voice mode methods
@@ -10228,6 +10281,8 @@ class HermesCLI:
             set_approval_callback(None)
             set_secret_capture_callback(None)
             # Close session in SQLite
+            if self.agent:
+                self._finalize_current_session("cli_close")
             if hasattr(self, '_session_db') and self._session_db and self.agent:
                 try:
                     self._session_db.end_session(self.agent.session_id, "cli_close")

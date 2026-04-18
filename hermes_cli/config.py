@@ -662,6 +662,11 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Session-end RAW writer — writes high-value session summaries into a
+        # wiki-style external memory store when a session closes.
+        "session_end_auto_write": False,
+        "session_end_write_mode": "off",  # off | raw-only | raw-and-enqueue
+        "session_end_write_path": "",
     },
 
     # Subagent delegation — override the provider:model used by delegate_task
