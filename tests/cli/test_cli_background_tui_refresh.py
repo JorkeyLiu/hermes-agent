@@ -92,7 +92,7 @@ class TestBackgroundCommandTuiRefresh:
         # If we get here without exception, test passes
 
     def test_background_task_thread_safety(self):
-        """Background task tracking is thread-safe."""
+        """Background task bookkeeping is thread-safe."""
         cli_obj = _make_cli()
 
         # Simulate adding and removing background tasks

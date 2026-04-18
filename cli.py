@@ -1920,7 +1920,7 @@ class HermesCLI:
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
 
-        # Background task tracking: {task_id: threading.Thread}
+        # Background task threads: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
