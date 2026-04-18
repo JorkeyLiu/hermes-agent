@@ -1281,8 +1281,6 @@ class AIAgent:
         self._memory_flush_min_turns = 6
         self._turns_since_memory = 0
         self._iters_since_skill = 0
-        self._task_nudge_interval = 10  # turn-based, like memory
-        self._turns_since_task = 0
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -1411,13 +1409,6 @@ class AIAgent:
         try:
             skills_config = _agent_cfg.get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
-        except Exception:
-            pass
-
-        # Task tracking config: nudge interval for task tracking reminders
-        try:
-            task_config = _agent_cfg.get("task", {})
-            self._task_nudge_interval = int(task_config.get("nudge_interval", 10))
         except Exception:
             pass
 
@@ -2477,27 +2468,13 @@ class AIAgent:
         "If nothing stands out, just say 'Nothing to save.' and stop."
     )
 
-    _TASK_REVIEW_PROMPT = (
-        "You are a task tracking agent. Review this conversation and determine "
-        "if it represents significant technical work (debugging complex issues, "
-        "developing new features, or deep research) that would benefit from "
-        "cross-session tracking in an Obsidian note.\n\n"
-        "If not worth tracking, say 'Nothing to track.' and stop.\n\n"
-        "If worth tracking, use the 'task_tracking_manage' tool to maintain the record:\n"
-        "1. First, use action='find' with the task topic and high-signal keywords to locate any existing note.\n"
-        "2. If a matching note is found, use action='update' to append the latest progress and update status/summary.\n"
-        "3. If no matching note exists, use action='create' to initialize a new note with the required template.\n\n"
-        "Write in Chinese (the user's language) and be concise."
-    )
-
     def _spawn_background_review(
         self,
         messages_snapshot: List[Dict],
         review_memory: bool = False,
         review_skills: bool = False,
-        review_tasks: bool = False,
     ) -> None:
-        """Spawn a background thread to review the conversation for memory/skill/task saves.
+        """Spawn a background thread to review the conversation for memory/skill saves.
 
         Creates a full AIAgent fork with the same model, tools, and context as the
         main session. The review prompt is appended as the next user turn in the
@@ -2506,12 +2483,8 @@ class AIAgent:
         """
         import threading
 
-        # Pick the right prompt based on which triggers fired.
-        # Note: task review is always spawned separately, so this method
-        # is either called for memory/skill OR for task — never both.
-        if review_tasks:
-            prompt = self._TASK_REVIEW_PROMPT
-        elif review_memory and review_skills:
+        # Pick the right prompt based on which triggers fired
+        if review_memory and review_skills:
             prompt = self._COMBINED_REVIEW_PROMPT
         elif review_memory:
             prompt = self._MEMORY_REVIEW_PROMPT
@@ -2539,7 +2512,6 @@ class AIAgent:
                     review_agent._apply_auto_memory_tool_filter()
                     review_agent._memory_nudge_interval = 0
                     review_agent._skill_nudge_interval = 0
-                    review_agent._task_nudge_interval = 0
 
                     review_agent.run_conversation(
                         user_message=prompt,
@@ -2548,15 +2520,6 @@ class AIAgent:
 
                 # Scan the review agent's messages for successful tool actions
                 # and surface a compact summary to the user.
-                #
-                # Two result formats exist:
-                # 1. Standard: {"success": true, "message": "...", "target": "..."}
-                #    — memory tool, skill_manage, etc.
-                # 2. WriteResult: {"bytes_written": N, "dirs_created": bool}
-                #    — write_file, patch (file tools)
-                #
-                # We detect both and deduplicate by action string.
-                actions_seen = set()
                 actions = []
                 for msg in getattr(review_agent, "_session_messages", []):
                     if not isinstance(msg, dict) or msg.get("role") != "tool":
@@ -2565,40 +2528,23 @@ class AIAgent:
                         data = json.loads(msg.get("content", "{}"))
                     except (json.JSONDecodeError, TypeError):
                         continue
-
-                    # Skip errors
-                    if data.get("error"):
-                        continue
-
-                    # Format 2: WriteResult (write_file / patch to .md files)
-                    if "bytes_written" in data and not data.get("error"):
-                        # Use the tool's provided message if available, otherwise fallback
-                        _action = data.get("message", "Task tracking note updated")
-                        if _action not in actions_seen:
-                            actions_seen.add(_action)
-                            actions.append(_action)
-                        continue
-
-                    # Format 1: Standard result dict
                     if not data.get("success"):
                         continue
                     message = data.get("message", "")
                     target = data.get("target", "")
-                    _action = None
-                    if "created" in message.lower() or "updated" in message.lower():
-                        _action = message
+                    if "created" in message.lower():
+                        actions.append(message)
+                    elif "updated" in message.lower():
+                        actions.append(message)
                     elif "added" in message.lower() or (target and "add" in message.lower()):
                         label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-                        _action = f"{label} updated"
+                        actions.append(f"{label} updated")
                     elif "Entry added" in message:
                         label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-                        _action = f"{label} updated"
+                        actions.append(f"{label} updated")
                     elif "removed" in message.lower() or "replaced" in message.lower():
                         label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-                        _action = f"{label} updated"
-                    if _action and _action not in actions_seen:
-                        actions_seen.add(_action)
-                        actions.append(_action)
+                        actions.append(f"{label} updated")
 
                 if actions:
                     summary = " · ".join(dict.fromkeys(actions))
@@ -8731,14 +8677,6 @@ class AIAgent:
                 _should_review_memory = True
                 self._turns_since_memory = 0
 
-        # Track task nudge trigger (turn-based, like memory).
-        _should_review_tasks = False
-        if self._task_nudge_interval > 0:
-            self._turns_since_task += 1
-            if self._turns_since_task >= self._task_nudge_interval:
-                _should_review_tasks = True
-                self._turns_since_task = 0
-
         # Add user message
         user_msg = {"role": "user", "content": user_message}
         messages.append(user_msg)
@@ -11736,30 +11674,17 @@ class AIAgent:
             except Exception:
                 pass
 
-        # Background memory/skill/task review — runs AFTER the response is delivered
+        # Background memory/skill review — runs AFTER the response is delivered
         # so it never competes with the user's task for model attention.
-        # Task review is spawned SEPARATELY from memory/skill review so each
-        # gets a full, dedicated prompt (not a merged suffix).
-        if final_response and not interrupted:
-            # Memory + skill review (existing behavior)
-            if _should_review_memory or _should_review_skills:
-                try:
-                    self._spawn_background_review(
-                        messages_snapshot=list(messages),
-                        review_memory=_should_review_memory,
-                        review_skills=_should_review_skills,
-                    )
-                except Exception:
-                    pass
-            # Task tracking review (separate round with full _TASK_REVIEW_PROMPT)
-            if _should_review_tasks:
-                try:
-                    self._spawn_background_review(
-                        messages_snapshot=list(messages),
-                        review_tasks=True,
-                    )
-                except Exception:
-                    pass
+        if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+            try:
+                self._spawn_background_review(
+                    messages_snapshot=list(messages),
+                    review_memory=_should_review_memory,
+                    review_skills=_should_review_skills,
+                )
+            except Exception:
+                pass  # Background review is best-effort
 
         # Note: Memory provider on_session_end() + shutdown_all() are NOT
         # called here — run_conversation() is called once per user message in
