@@ -1276,6 +1276,7 @@ class AIAgent:
         self._memory_store = None
         self._memory_enabled = False
         self._user_profile_enabled = False
+        self._disable_auto_memory = False
         self._memory_nudge_interval = 10
         self._memory_flush_min_turns = 6
         self._turns_since_memory = 0
@@ -1285,6 +1286,7 @@ class AIAgent:
                 mem_config = _agent_cfg.get("memory", {})
                 self._memory_enabled = mem_config.get("memory_enabled", False)
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
+                self._disable_auto_memory = bool(mem_config.get("disable_auto_memory", False))
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
                 self._memory_flush_min_turns = int(mem_config.get("flush_min_turns", 6))
                 if self._memory_enabled or self._user_profile_enabled:
@@ -1399,6 +1401,8 @@ class AIAgent:
                 if _tname:
                     self.valid_tool_names.add(_tname)
                     _existing_tool_names.add(_tname)
+
+        self._apply_auto_memory_tool_filter()
 
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
@@ -2485,6 +2489,8 @@ class AIAgent:
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled
                     review_agent._user_profile_enabled = self._user_profile_enabled
+                    review_agent._disable_auto_memory = self._disable_auto_memory
+                    review_agent._apply_auto_memory_tool_filter()
                     review_agent._memory_nudge_interval = 0
                     review_agent._skill_nudge_interval = 0
 
@@ -3501,6 +3507,24 @@ class AIAgent:
 
 
 
+
+    def _apply_auto_memory_tool_filter(self) -> None:
+        """Hide the built-in memory tool while preserving MEMORY.md / USER.md injection."""
+        if not getattr(self, "_disable_auto_memory", False):
+            return
+        if not self.tools:
+            self.valid_tool_names.discard("memory")
+            return
+
+        self.tools = [
+            tool for tool in self.tools
+            if tool.get("function", {}).get("name") != "memory"
+        ]
+        self.valid_tool_names = {
+            tool.get("function", {}).get("name")
+            for tool in self.tools
+            if tool.get("function", {}).get("name")
+        }
 
     def _build_system_prompt(self, system_message: str = None) -> str:
         """
@@ -7228,6 +7252,8 @@ class AIAgent:
                        0 = always flush (used for compression).
         """
         if self._memory_flush_min_turns == 0 and min_turns is None:
+            return
+        if self._disable_auto_memory:
             return
         if "memory" not in self.valid_tool_names or not self._memory_store:
             return
