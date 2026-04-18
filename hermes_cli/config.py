@@ -663,6 +663,11 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Session-end RAW writer — writes high-value session summaries into a
+        # wiki-style external memory store when a session closes.
+        "session_end_auto_write": False,
+        "session_end_write_mode": "off",  # off | raw-only | raw-and-enqueue
+        "session_end_write_path": "",
     },
 
     # Subagent delegation — override the provider:model used by delegate_task
@@ -771,6 +776,20 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,
+    },
+
+    # execute_code settings — controls the tool used for programmatic tool calls.
+    "code_execution": {
+        # Execution mode:
+        #   project (default) — scripts run in the session's working directory
+        #     with the active virtualenv/conda env's python, so project deps
+        #     (pandas, torch, project packages) and relative paths resolve.
+        #   strict            — scripts run in an isolated temp directory with
+        #     hermes-agent's own python (sys.executable). Maximum isolation
+        #     and reproducibility; project deps and relative paths won't work.
+        # Env scrubbing (strips *_API_KEY, *_TOKEN, *_SECRET, ...) and the
+        # tool whitelist apply identically in both modes.
+        "mode": "project",
     },
 
     # Logging — controls file logging to ~/.hermes/logs/.
