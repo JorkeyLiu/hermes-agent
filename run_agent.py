@@ -2388,56 +2388,15 @@ class AIAgent:
 
     _TASK_REVIEW_PROMPT = (
         "You are a task tracking agent. Review this conversation and determine "
-        "if it represents significant technical work that would benefit from "
+        "if it represents significant technical work (debugging complex issues, "
+        "developing new features, or deep research) that would benefit from "
         "cross-session tracking in an Obsidian note.\n\n"
-        "STEP 1 — Determine if tracking is needed:\n"
-        "This conversation is WORTH TRACKING if it involved:\n"
-        "- Debugging a complex issue (multiple attempts, root cause analysis)\n"
-        "- Developing a new feature (design decisions, implementation steps)\n"
-        "- Research/investigation (comparing options, testing approaches)\n"
-        "- Any work spanning multiple tool calls with iterative refinement\n\n"
-        "This conversation is NOT worth tracking if it was:\n"
-        "- A simple one-shot task (single question, quick answer)\n"
-        "- Routine maintenance (updates, backups, simple config changes)\n"
-        "- Casual conversation or information lookup\n\n"
         "If not worth tracking, say 'Nothing to track.' and stop.\n\n"
-        "STEP 2 — Find or create the tracking note:\n"
-        "First infer the current task's core search terms from the conversation: project name, task type, stable slug, and 3-6 high-signal keywords.\n"
-        "Search from ~/Documents/ObsidianNotes/计算机/Agent/ using those task-specific keywords first. Do NOT enumerate the whole directory unless keyword search fails.\n"
-        "Use directory names and filename prefixes only as auxiliary filters, not as the primary retrieval method.\n"
-        "Naming rules: research-<slug> for pure investigation; task-<slug> for ongoing non-project tasks; feat-/fix-/refactor-/chore- for project development work.\n"
-        "After keyword search returns candidates, read the first 20 lines to confirm topic/summary.\n"
-        "Match priority: topic > filename slug > summary > directory hint.\n\n"
-        "STEP 3 — Update, rename, or create:\n"
-        "IF a matching note exists:\n"
-        "  - Read the full file\n"
-        "  - If the current prefix is wrong, rename the file to the better prefix but keep the same slug/topic\n"
-        "  - Patch the '进展' section by appending new developments\n"
-        "  - Update frontmatter 'updated', 'summary', tags, and status as needed\n\n"
-        "IF no matching note exists:\n"
-        "  - Infer the best save location for the note, using a project subdirectory only when clearly appropriate\n"
-        "  - Create a new file: <prefix>-<slug>.md\n"
-        "  - Use this template:\n\n"
-        "---\n"
-        "title: <concise task name>\n"
-        "topic: <stable task slug>\n"
-        "tags: [<project>, <work-type>]\n"
-        "created: YYYY-MM-DD\n"
-        "updated: YYYY-MM-DD\n"
-        "type: task\n"
-        "summary: <one-line description>\n"
-        "status: active\n"
-        "---\n\n"
-        "## 背景\n<why this task exists, goals, constraints>\n\n"
-        "## 进展\n- YYYY-MM-DD: <what happened>\n\n"
-        "## 关键发现\n<root causes, decisions, insights>\n\n"
-        "## 待办\n- [ ] <remaining items>\n\n"
-        "Save to the inferred project directory under ~/Documents/ObsidianNotes/计算机/Agent/\n\n"
-        "IMPORTANT:\n"
-        "- Write in Chinese (the user's language)\n"
-        "- Be concise — focus on facts, not narration\n"
-        "- Always include dates in progress entries\n"
-        "- If the task seems completed, set status to 'completed'"
+        "If worth tracking, use the 'task_tracking_manage' tool to maintain the record:\n"
+        "1. First, use action='find' with the task topic and high-signal keywords to locate any existing note.\n"
+        "2. If a matching note is found, use action='update' to append the latest progress and update status/summary.\n"
+        "3. If no matching note exists, use action='create' to initialize a new note with the required template.\n\n"
+        "Write in Chinese (the user's language) and be concise."
     )
 
     def _spawn_background_review(
@@ -2520,9 +2479,8 @@ class AIAgent:
 
                     # Format 2: WriteResult (write_file / patch to .md files)
                     if "bytes_written" in data and not data.get("error"):
-                        # Check tool name for context (if available in message)
-                        tool_name = msg.get("name", "")
-                        _action = "Task tracking note updated"
+                        # Use the tool's provided message if available, otherwise fallback
+                        _action = data.get("message", "Task tracking note updated")
                         if _action not in actions_seen:
                             actions_seen.add(_action)
                             actions.append(_action)
