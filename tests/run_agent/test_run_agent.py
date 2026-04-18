@@ -86,6 +86,47 @@ def agent_with_memory_tool():
         return a
 
 
+@pytest.fixture()
+def agent_with_disabled_auto_memory():
+    """Agent that keeps MEMORY.md injection but hides the built-in memory tool."""
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search", "memory"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "memory": {
+                    "memory_enabled": True,
+                    "user_profile_enabled": True,
+                    "disable_auto_memory": True,
+                }
+            },
+        ),
+        patch("tools.memory_tool.MemoryStore") as mock_store_cls,
+    ):
+        store = MagicMock()
+        store.format_for_system_prompt.side_effect = (
+            lambda target: {
+                "memory": "MEMORY BLOCK",
+                "user": "USER BLOCK",
+            }.get(target)
+        )
+        mock_store_cls.return_value = store
+        a = AIAgent(
+            api_key="test-k...7890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+        )
+        a.client = MagicMock()
+        return a
+
+
 def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()
@@ -669,6 +710,22 @@ class TestBuildSystemPrompt:
 
         prompt = agent._build_system_prompt()
         assert MEMORY_GUIDANCE not in prompt
+
+    def test_disable_auto_memory_keeps_blocks_but_removes_guidance(self, agent_with_disabled_auto_memory):
+        from agent.prompt_builder import MEMORY_GUIDANCE
+
+        prompt = agent_with_disabled_auto_memory._build_system_prompt()
+        assert MEMORY_GUIDANCE not in prompt
+        assert "MEMORY BLOCK" in prompt
+        assert "USER BLOCK" in prompt
+        assert "memory" not in agent_with_disabled_auto_memory.valid_tool_names
+
+    def test_disable_auto_memory_removes_built_in_memory_tool(self, agent_with_disabled_auto_memory):
+        tool_names = {
+            tool["function"]["name"]
+            for tool in agent_with_disabled_auto_memory.tools
+        }
+        assert "memory" not in tool_names
 
     def test_includes_datetime(self, agent):
         prompt = agent._build_system_prompt()
@@ -2606,7 +2663,6 @@ class TestFlushSentinelNotLeaked:
         agent._memory_flush_min_turns = 1
         agent._user_turn_count = 10
         agent._cached_system_prompt = "system"
-
         messages = [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi"},
@@ -2631,6 +2687,21 @@ class TestFlushSentinelNotLeaked:
             assert "_flush_sentinel" not in msg, (
                 f"_flush_sentinel leaked to API in message: {msg}"
             )
+
+    def test_disable_auto_memory_skips_flush(self, agent_with_disabled_auto_memory):
+        agent = agent_with_disabled_auto_memory
+        agent._user_turn_count = 10
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "remember this"},
+        ]
+
+        with patch("agent.auxiliary_client.call_llm") as mock_call_llm:
+            agent.flush_memories(messages, min_turns=0)
+
+        mock_call_llm.assert_not_called()
+        agent.client.chat.completions.create.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

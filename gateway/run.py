@@ -2952,7 +2952,10 @@ class GatewayRunner:
                 return await self._handle_status_command(event)
 
             # Resolve the command once for all early-intercept checks below.
-            from hermes_cli.commands import resolve_command as _resolve_cmd_inner
+            from hermes_cli.commands import (
+                resolve_command as _resolve_cmd_inner,
+                should_bypass_active_session as _should_bypass_active_inner,
+            )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
 
@@ -3037,6 +3040,20 @@ class GatewayRunner:
             # parallel task and must never interrupt the active conversation.
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
+
+            # Gateway-handled info/control commands must never fall through to
+            # the interrupt path. If they are queued as pending text, the
+            # slash-command safety net discards them before the user sees any
+            # response.
+            if _cmd_def_inner and _should_bypass_active_inner(_cmd_def_inner.name):
+                if _cmd_def_inner.name == "help":
+                    return await self._handle_help_command(event)
+                if _cmd_def_inner.name == "commands":
+                    return await self._handle_commands_command(event)
+                if _cmd_def_inner.name == "profile":
+                    return await self._handle_profile_command(event)
+                if _cmd_def_inner.name == "update":
+                    return await self._handle_update_command(event)
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
@@ -4721,6 +4738,26 @@ class GatewayRunner:
 
     async def _handle_restart_command(self, event: MessageEvent) -> str:
         """Handle /restart command - drain active work, then restart the gateway."""
+        # Defensive idempotency check: if the previous gateway process
+        # recorded this same /restart (same platform + update_id) and the new
+        # process is seeing it *again*, this is a re-delivery caused by PTB's
+        # graceful-shutdown `get_updates` ACK failing on the way out ("Error
+        # while calling `get_updates` one more time to mark all fetched
+        # updates. Suppressing error to ensure graceful shutdown. When
+        # polling for updates is restarted, updates may be received twice."
+        # in gateway.log).  Ignoring the stale redelivery prevents a
+        # self-perpetuating restart loop where every fresh gateway
+        # re-processes the same /restart command and immediately restarts
+        # again.
+        if self._is_stale_restart_redelivery(event):
+            logger.info(
+                "Ignoring redelivered /restart (platform=%s, update_id=%s) — "
+                "already processed by a previous gateway instance.",
+                event.source.platform.value if event.source and event.source.platform else "?",
+                event.platform_update_id,
+            )
+            return ""
+
         if self._restart_requested or self._draining:
             count = self._running_agent_count()
             if count:
@@ -4743,6 +4780,26 @@ class GatewayRunner:
         except Exception as e:
             logger.debug("Failed to write restart notify file: %s", e)
 
+        # Record the triggering platform + update_id in a dedicated dedup
+        # marker.  Unlike .restart_notify.json (which gets unlinked once the
+        # new gateway sends the "gateway restarted" notification), this
+        # marker persists so the new gateway can still detect a delayed
+        # /restart redelivery from Telegram.  Overwritten on every /restart.
+        try:
+            import json as _json
+            import time as _time
+            dedup_data = {
+                "platform": event.source.platform.value if event.source.platform else None,
+                "requested_at": _time.time(),
+            }
+            if event.platform_update_id is not None:
+                dedup_data["update_id"] = event.platform_update_id
+            (_hermes_home / ".restart_last_processed.json").write_text(
+                _json.dumps(dedup_data)
+            )
+        except Exception as e:
+            logger.debug("Failed to write restart dedup marker: %s", e)
+
         active_agents = self._running_agent_count()
         # When running under a service manager (systemd/launchd), use the
         # service restart path: exit with code 75 so the service manager
@@ -4757,6 +4814,58 @@ class GatewayRunner:
         if active_agents:
             return f"⏳ Draining {active_agents} active agent(s) before restart..."
         return "♻ Restarting gateway. If you aren't notified within 60 seconds, restart from the console with `hermes gateway restart`."
+
+    def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
+        """Return True if this /restart is a Telegram re-delivery we already handled.
+
+        The previous gateway wrote ``.restart_last_processed.json`` with the
+        triggering platform + update_id when it processed the /restart.  If
+        we now see a /restart on the same platform with an update_id <= that
+        recorded value AND the marker is recent (< 5 minutes), it's a
+        redelivery and should be ignored.
+
+        Only applies to Telegram today (the only platform that exposes a
+        numeric cross-session update ordering); other platforms return False.
+        """
+        if event is None or event.source is None:
+            return False
+        if event.platform_update_id is None:
+            return False
+        if event.source.platform is None:
+            return False
+        # Only Telegram populates platform_update_id currently; be explicit
+        # so future platforms aren't accidentally gated by this check.
+        try:
+            platform_value = event.source.platform.value
+        except Exception:
+            return False
+        if platform_value != "telegram":
+            return False
+
+        try:
+            import json as _json
+            import time as _time
+            marker_path = _hermes_home / ".restart_last_processed.json"
+            if not marker_path.exists():
+                return False
+            data = _json.loads(marker_path.read_text())
+        except Exception:
+            return False
+
+        if data.get("platform") != platform_value:
+            return False
+        recorded_uid = data.get("update_id")
+        if not isinstance(recorded_uid, int):
+            return False
+        # Staleness guard: ignore markers older than 5 minutes.  A legitimately
+        # old marker (e.g. crash recovery where notify never fired) should not
+        # swallow a fresh /restart from the user.
+        requested_at = data.get("requested_at")
+        if isinstance(requested_at, (int, float)):
+            if _time.time() - requested_at > 300:
+                return False
+        return event.platform_update_id <= recorded_uid
+
 
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
@@ -5503,8 +5612,7 @@ class GatewayRunner:
             if "pynacl" in err_lower or "nacl" in err_lower or "davey" in err_lower:
                 return (
                     "Voice dependencies are missing (PyNaCl / davey). "
-                    "Install or reinstall Hermes with the messaging extra, e.g. "
-                    "`pip install hermes-agent[messaging]`."
+                    f"Install with: `{sys.executable} -m pip install PyNaCl`"
                 )
             return f"Failed to join voice channel: {e}"
 
@@ -10035,6 +10143,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 "Replacing existing gateway instance (PID %d) with --replace.",
                 existing_pid,
             )
+            # Record a takeover marker so the target's shutdown handler
+            # recognises its SIGTERM as a planned takeover and exits 0
+            # (rather than exit 1, which would trigger systemd's
+            # Restart=on-failure and start a flap loop against us).
+            # Best-effort — proceed even if the write fails.
+            try:
+                from gateway.status import write_takeover_marker
+                write_takeover_marker(existing_pid)
+            except Exception as e:
+                logger.debug("Could not write takeover marker: %s", e)
             try:
                 terminate_pid(existing_pid, force=False)
             except ProcessLookupError:
@@ -10044,6 +10162,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                     "Permission denied killing PID %d. Cannot replace.",
                     existing_pid,
                 )
+                # Marker is scoped to a specific target; clean it up on
+                # give-up so it doesn't grief an unrelated future shutdown.
+                try:
+                    from gateway.status import clear_takeover_marker
+                    clear_takeover_marker()
+                except Exception:
+                    pass
                 return False
             # Wait up to 10 seconds for the old process to exit
             for _ in range(20):
@@ -10064,6 +10189,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
             remove_pid_file()
+            # Clean up any takeover marker the old process didn't consume
+            # (e.g. SIGKILL'd before its shutdown handler could read it).
+            try:
+                from gateway.status import clear_takeover_marker
+                clear_takeover_marker()
+            except Exception:
+                pass
             # Also release all scoped locks left by the old process.
             # Stopped (Ctrl+Z) processes don't release locks on exit,
             # leaving stale lock files that block the new gateway from starting.
@@ -10131,8 +10263,27 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Set up signal handlers
     def shutdown_signal_handler():
         nonlocal _signal_initiated_shutdown
-        _signal_initiated_shutdown = True
-        logger.info("Received SIGTERM/SIGINT — initiating shutdown")
+        # Planned --replace takeover check: when a sibling gateway is
+        # taking over via --replace, it wrote a marker naming this PID
+        # before sending SIGTERM. If present, treat the signal as a
+        # planned shutdown and exit 0 so systemd's Restart=on-failure
+        # doesn't revive us (which would flap-fight the replacer when
+        # both services are enabled, e.g. hermes.service + hermes-
+        # gateway.service from pre-rename installs).
+        planned_takeover = False
+        try:
+            from gateway.status import consume_takeover_marker_for_self
+            planned_takeover = consume_takeover_marker_for_self()
+        except Exception as e:
+            logger.debug("Takeover marker check failed: %s", e)
+
+        if planned_takeover:
+            logger.info(
+                "Received SIGTERM as a planned --replace takeover — exiting cleanly"
+            )
+        else:
+            _signal_initiated_shutdown = True
+            logger.info("Received SIGTERM/SIGINT — initiating shutdown")
         # Diagnostic: log all hermes-related processes so we can identify
         # what triggered the signal (hermes update, hermes gateway restart,
         # a stale detached subprocess, etc.).
